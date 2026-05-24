@@ -1,0 +1,77 @@
+[project]
+name = "yt-downloader-py"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "environs[dotenv]>=15.0.1",
+    "pre-commit>=4.6.0",
+    "requests>=2.34.2",
+    "yt-dlp[default]>=2026.3.17",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 99
+exclude = [
+    "manage.py", "settings.py",
+    "*/migrations/*", "*/fixtures/*",
+    ".venv/*", ".conda/*", ".git/*", ".github/*", ".vscode/*",
+    "node_modules/*", "static/*", "templates/*",
+    "build/*", "dist/*", "*/__pycache__/*", "*/.mypy_cache/*", ".idea/*",
+]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",
+    "B",
+    "BLE",
+    "UP",
+]
+ignore = [
+    "E501",
+    "COM812",
+    "ISC001",
+    "B017",
+    "BLE001",
+    "B904",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+"**/tests/**" = ["D"]
+
+[tool.ruff.format]
+quote-style = "single"
+skip-magic-trailing-comma = false
+
+[tool.black]
+skip-string-normalization = true
+line-length = 99
+target-version = ['py312']
+force-exclude = '\b(static/|docker/|apps_static/|nginx/|.git/|.vscode/|.conda/|.venv/|templates/|_dev/|fixtures/|migrations/|manage.py)'
+
+[tool.isort]
+profile = "black"
+src_paths = ["."]
+line_length = 99
+skip = ["manage.py", ".venv", "venv"]
+skip_glob = [
+    "*/migrations/*",
+    ".venv/*",
+    "*/.venv/*",
+    ".conda/*",
+    ".git/*"
+]
+combine_star = true
+order_by_type = true
+force_single_line = true
+known_first_party = ["apps"]
+known_django = "django"
+sections = ["FUTURE", "STDLIB", "DJANGO", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+import_heading_stdlib = "Standard Library"
+import_heading_thirdparty = "3rd-Party"
+import_heading_firstparty = "Project"
+import_heading_localfolder = "Local"
+import_heading_django = "Django"

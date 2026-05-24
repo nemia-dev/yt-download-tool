@@ -1,0 +1,41 @@
+default_install_hook_types: [pre-commit]
+default_language_version:
+  python: python3.14
+
+exclude: >
+  ^(
+    static/|
+    Docker/|
+    apps_static/|
+    venv/|
+    templates/|
+    \.github/|
+    apps/.*/migrations/|
+    .*fixtures/
+  )
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: debug-statements
+      - id: detect-private-key
+
+  - repo: https://github.com/pycqa/isort
+    rev: 8.0.1
+    hooks:
+      - id: isort
+        args:
+          - --settings-path=pyproject.toml
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.9
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
