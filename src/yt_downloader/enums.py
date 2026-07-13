@@ -7,3 +7,4 @@ from enum import unique
 class DownloadMode(StrEnum):
     VIDEO = 'video'
     AUDIO = 'audio'
+    TRANSCRIPT = 'transcript'

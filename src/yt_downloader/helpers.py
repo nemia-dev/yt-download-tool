@@ -54,12 +54,14 @@ def get_video_data(yt_link: str) -> VideoData | None:
         return VideoData(title=playlist_title, is_playlist=True, entries=videos)
 
     else:
+        video_id = info_dict.get('id')
         video_title = info_dict.get('title', 'Unknown Title')
         video_duration = info_dict.get('duration', 0)  # In seconds
         view_count = info_dict.get('view_count', 0)
 
+        print(f'ID: {video_id}')
         print(f'Title: {video_title}')
         print(f'Duration: {video_duration} seconds')
         print(f'Views: {view_count}')
 
-        return VideoData(title=video_title, is_playlist=False, entries=[])
+        return VideoData(id=video_id, title=video_title, is_playlist=False, entries=[])

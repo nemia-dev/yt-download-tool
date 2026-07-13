@@ -8,6 +8,7 @@ dependencies = [
     "environs[dotenv]>=15.0.1",
     "pre-commit>=4.6.0",
     "requests>=2.34.2",
+    "youtube-transcript-api>=1.2.4",
     "yt-dlp[default]>=2026.3.17",
 ]
 
@@ -67,7 +68,7 @@ skip_glob = [
 combine_star = true
 order_by_type = true
 force_single_line = true
-known_first_party = ["apps"]
+known_first_party = ["yt_downloader"]
 known_django = "django"
 sections = ["FUTURE", "STDLIB", "DJANGO", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
 import_heading_stdlib = "Standard Library"
