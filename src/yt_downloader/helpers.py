@@ -3,9 +3,11 @@ import re
 from pathlib import Path
 
 # 3rd-Party
-from d_types import VideoData
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
+
+# Project
+from yt_downloader.d_types import VideoData
 
 
 def sanitize_path(path_str: str) -> Path:

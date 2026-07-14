@@ -3,8 +3,10 @@ import asyncio
 from pathlib import Path
 
 # 3rd-Party
-from enums import DownloadMode
 from yt_dlp import YoutubeDL
+
+# Project
+from yt_downloader.enums import DownloadMode
 
 
 def get_download_options(output_template: str, choice_type: DownloadMode, quality: str) -> dict:
