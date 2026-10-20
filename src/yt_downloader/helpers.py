@@ -1,5 +1,6 @@
 # Standard Library
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 # 3rd-Party
@@ -9,27 +10,24 @@ from yt_dlp.utils import DownloadError
 # Project
 from yt_downloader.d_types import VideoData
 
+LogFn = Callable[[str], None]
+
 
 def sanitize_path(path_str: str) -> Path:
     parts = Path(path_str).parts
-
     cleaned = [re.sub(r'[<>:"\\|?*]', '-', part).strip().strip('.') for part in parts]
-
     return Path(*cleaned)
 
 
-def get_video_data(yt_link: str) -> VideoData | None:
-    info_dict = {}
+def get_video_data(yt_link: str, log: LogFn = print) -> VideoData | None:
     try:
-        with YoutubeDL({'download': False, 'extract_flat': True}) as ydl:
+        with YoutubeDL({'download': False, 'extract_flat': True, 'quiet': True}) as ydl:
             info_dict = ydl.extract_info(yt_link, download=False)
-
-    except DownloadError as e:
-        print(f'yt-dlp error: {e}')
+    except DownloadError as exc:
+        log(f'yt-dlp error: {exc}')
         return None
-
-    except Exception as e:
-        print(f'Unexpected error: {e}')
+    except Exception as exc:
+        log(f'Unexpected error: {exc}')
         return None
 
     if not info_dict:
@@ -37,33 +35,25 @@ def get_video_data(yt_link: str) -> VideoData | None:
 
     if info_dict.get('_type') == 'playlist':
         playlist_title = info_dict.get('title', 'Unknown Playlist')
-        videos = info_dict.get('entries', [])  # The list of videos in the playlist
+        videos = list(info_dict.get('entries') or [])
 
-        print('--- Playlist Info ---')
-        print(f'Playlist Title: {playlist_title}')
-        print(f'Total Videos: {len(videos)}\n')
+        log(f'Playlist: {playlist_title}')
+        log(f'Videos: {len(videos)}')
 
-        # Loop through individual videos inside the playlist
-        print('Videos in this playlist:')
-        for index, video in enumerate(videos, start=1):
-            # Note: In 'extract_flat' mode, duration is available but views/formats are skipped for speed
-            v_title = video.get('title', 'Unknown Title')
-            v_duration = video.get('duration', 0)
-            v_url = video.get('url', '')
+        return VideoData(
+            id=info_dict.get('id'),
+            title=playlist_title,
+            is_playlist=True,
+            entries=videos,
+        )
 
-            print(f'[{index}] {v_title} ({v_duration} seconds) - URL: {v_url}')
+    video_id = info_dict.get('id')
+    video_title = info_dict.get('title', 'Unknown Title')
+    log(f'Video: {video_title}')
 
-        return VideoData(title=playlist_title, is_playlist=True, entries=videos)
-
-    else:
-        video_id = info_dict.get('id')
-        video_title = info_dict.get('title', 'Unknown Title')
-        video_duration = info_dict.get('duration', 0)  # In seconds
-        view_count = info_dict.get('view_count', 0)
-
-        print(f'ID: {video_id}')
-        print(f'Title: {video_title}')
-        print(f'Duration: {video_duration} seconds')
-        print(f'Views: {view_count}')
-
-        return VideoData(id=video_id, title=video_title, is_playlist=False, entries=[])
+    return VideoData(
+        id=video_id,
+        title=video_title,
+        is_playlist=False,
+        entries=[],
+    )

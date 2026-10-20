@@ -1,7 +1,7 @@
 [project]
 name = "yt-downloader-py"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.3.0"
+description = "YouTube video, audio and transcript queue manager with Tkinter GUI and CLI"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,6 +11,10 @@ dependencies = [
     "youtube-transcript-api>=1.2.4",
     "yt-dlp[default]>=2026.3.17",
 ]
+
+[project.scripts]
+yt-download = "yt_downloader.cli:main"
+yt-download-gui = "yt_downloader.gui:main"
 
 [tool.ruff]
 target-version = "py312"
