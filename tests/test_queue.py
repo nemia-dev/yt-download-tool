@@ -195,7 +195,9 @@ def test_sequential_worker_and_report(tmp_path, monkeypatch):
 
     monkeypatch.setattr(queue_worker, 'process_task', mock_process)
     logs = []
-    counts = queue_worker.run_queue(manager, threading.Event(), logs.append, lambda: None)
+    counts = queue_worker.run_queue(
+        manager, threading.Event(), logs.append, lambda: None, max_concurrent=1
+    )
     assert processed == [x.video_id for x in tasks]
     assert counts[TaskStatus.UNAVAILABLE] == 1
     assert counts[TaskStatus.COMPLETED] == 1
@@ -220,7 +222,7 @@ def test_stop_after_current_task(tmp_path, monkeypatch):
         return TaskStatus.SKIPPED, task.output_path
 
     monkeypatch.setattr(queue_worker, 'process_task', process)
-    queue_worker.run_queue(manager, stop, lambda *_: None, lambda: None)
+    queue_worker.run_queue(manager, stop, lambda *_: None, lambda: None, max_concurrent=1)
     assert len(count) == 1
     assert manager.snapshot()[1].status == TaskStatus.PENDING
 
@@ -263,3 +265,127 @@ def test_existing_media_detected(tmp_path, monkeypatch):
     )
     status, output = queue_worker.process_task(task, lambda *_: None)
     assert status == TaskStatus.SKIPPED and output == str(existing)
+
+
+def many_tasks(tmp_path, count=8):
+    videos = tuple(VideoEntry(f'{i:011d}', f'Video {i}', i + 1) for i in range(count))
+    return create_tasks(
+        ResolvedSource('PLmany', 'Batch', videos),
+        DownloadMode.TRANSCRIPT,
+        None,
+        tmp_path / 'Transcription',
+    )
+
+
+def test_concurrent_workers_are_bounded_and_refill(tmp_path, monkeypatch):
+    # Standard Library
+    import time
+
+    # Project
+    from yt_downloader import queue_worker
+
+    manager = QueueManager(tmp_path / 'state.json')
+    tasks = many_tasks(tmp_path, count=9)
+    manager.add(tasks)
+    lock = threading.Lock()
+    active = maximum = 0
+
+    def mock_process(task, log):
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+        time.sleep(0.025)
+        with lock:
+            active -= 1
+        return TaskStatus.COMPLETED, task.output_path
+
+    monkeypatch.setattr(queue_worker, 'process_task', mock_process)
+    counts = queue_worker.run_queue(
+        manager, threading.Event(), lambda *_: None, lambda: None, max_concurrent=3
+    )
+    assert maximum == 3
+    assert active == 0
+    assert counts[TaskStatus.COMPLETED] == 9
+    assert all(t.status == TaskStatus.COMPLETED for t in manager.snapshot())
+
+
+def test_concurrent_stop_does_not_schedule_more_tasks(tmp_path, monkeypatch):
+    # Project
+    from yt_downloader import queue_worker
+
+    manager = QueueManager(tmp_path / 'state.json')
+    tasks = many_tasks(tmp_path, count=7)
+    manager.add(tasks)
+    started_three = threading.Event()
+    release = threading.Event()
+    stop = threading.Event()
+    lock = threading.Lock()
+    started = []
+    result = []
+
+    def mock_process(task, log):
+        with lock:
+            started.append(task.task_id)
+            if len(started) == 3:
+                started_three.set()
+        assert release.wait(4), 'Workers never released'
+        return TaskStatus.COMPLETED, task.output_path
+
+    monkeypatch.setattr(queue_worker, 'process_task', mock_process)
+    runner = threading.Thread(
+        target=lambda: result.append(
+            queue_worker.run_queue(manager, stop, lambda *_: None, lambda: None, max_concurrent=3)
+        )
+    )
+    runner.start()
+    try:
+        assert started_three.wait(4), 'Three workers failed to start'
+        assert len(started) == 3
+        assert sum(t.status == TaskStatus.PROCESSING for t in manager.snapshot()) == 3
+        stop.set()
+    finally:
+        release.set()
+        runner.join(5)
+    assert not runner.is_alive()
+    assert len(started) == 3
+    assert result[0][TaskStatus.COMPLETED] == 3
+    assert result[0][TaskStatus.PENDING] == 4
+
+
+def test_concurrent_unavailable_and_failures_independent(tmp_path, monkeypatch):
+    # Project
+    from yt_downloader import queue_worker
+
+    manager = QueueManager(tmp_path / 'state.json')
+    tasks = many_tasks(tmp_path, count=4)
+    manager.add(tasks)
+
+    def mock_process(task, log):
+        if task.video_id == tasks[0].video_id:
+            raise TranscriptUnavailable('Captions disabled')
+        if task.video_id == tasks[1].video_id:
+            raise TimeoutError('Temporary outage')
+        return TaskStatus.COMPLETED, task.output_path
+
+    monkeypatch.setattr(queue_worker, 'process_task', mock_process)
+    counts = queue_worker.run_queue(
+        manager, threading.Event(), lambda *_: None, lambda: None, max_concurrent=4
+    )
+    assert counts[TaskStatus.UNAVAILABLE] == 1
+    assert counts[TaskStatus.FAILED] == 1
+    assert counts[TaskStatus.COMPLETED] == 2
+    report = (tmp_path / 'Transcription' / 'transcription-report.txt').read_text()
+    assert 'Captions disabled' in report
+    assert 'Temporary outage' in report
+
+
+def test_concurrency_setting_is_saved_and_bounded(tmp_path):
+    manager = QueueManager(tmp_path / 'queue.json')
+    assert manager.get_concurrency(default=7) == 5
+    manager.set_concurrency(4)
+    assert QueueManager(manager.path).get_concurrency() == 4
+    for value in (0, 6):
+        with pytest.raises(ValueError):
+            manager.set_concurrency(value)
+    assert manager.get_concurrency() == 4

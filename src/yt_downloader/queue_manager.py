@@ -132,6 +132,7 @@ class QueueManager:
         self.lock = threading.RLock()
         self.tasks: list[QueueTask] = []
         self.folder_overrides: dict[str, str] = {}
+        self.concurrency: int | None = None
         self.load_warning: str = ''
         self._load()
 
@@ -158,6 +159,9 @@ class QueueManager:
                         task.error = ''
             self.tasks = tasks
             self.folder_overrides = dict(data.get('folder_overrides') or {})
+            saved_concurrency = data.get('concurrency')
+            if isinstance(saved_concurrency, int) and 1 <= saved_concurrency <= 5:
+                self.concurrency = saved_concurrency
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self.load_warning = (
                 f'Could not load queue state ({exc}); a backup will be kept before any new save.'
@@ -177,6 +181,7 @@ class QueueManager:
                 'version': 1,
                 'tasks': [asdict(t) for t in self.tasks],
                 'folder_overrides': self.folder_overrides,
+                'concurrency': self.concurrency,
             },
             ensure_ascii=False,
             indent=2,
@@ -268,6 +273,17 @@ class QueueManager:
         with self.lock:
             value = self.folder_overrides.get(mode.value)
         return Path(value) if value else None
+
+    def set_concurrency(self, count: int):
+        if not 1 <= count <= 5:
+            raise ValueError('Concurrent downloads must be between 1 and 5.')
+        with self.lock:
+            self.concurrency = count
+            self._save()
+
+    def get_concurrency(self, default: int = 3) -> int:
+        with self.lock:
+            return self.concurrency if self.concurrency is not None else max(1, min(5, default))
 
     def counts(self) -> Counter:
         return Counter(t.status for t in self.snapshot())

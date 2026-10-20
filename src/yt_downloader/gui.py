@@ -55,6 +55,9 @@ class DownloaderGui(tk.Tk):
         self._group_expansion: dict[str, bool] = {}
         self.mode_var = tk.StringVar(value=DownloadMode.TRANSCRIPT.value)
         self.quality_var = tk.StringVar()
+        self.concurrency_var = tk.StringVar(
+            value=str(self.manager.get_concurrency(self.config_data.max_concurrent_downloads))
+        )
         self.folder_var = tk.StringVar()
         self.output_var = tk.StringVar()
         self.progress_var = tk.StringVar(value='0 / 0 processed')
@@ -95,11 +98,12 @@ class DownloaderGui(tk.Tk):
 
         settings = ttk.Frame(frame)
         settings.grid(row=3, column=0, sticky='ew', pady=(0, 7))
-        for col in range(3):
+        for col in range(4):
             settings.columnconfigure(col, weight=1)
         ttk.Label(settings, text='Download as').grid(row=0, column=0, sticky='w')
         ttk.Label(settings, text='Quality').grid(row=0, column=1, sticky='w')
         ttk.Label(settings, text='Project subfolder (optional)').grid(row=0, column=2, sticky='w')
+        ttk.Label(settings, text='Parallel downloads').grid(row=0, column=3, sticky='w')
         radio_frame = ttk.Frame(settings)
         radio_frame.grid(row=1, column=0, sticky='w')
         self.mode_buttons = []
@@ -119,6 +123,14 @@ class DownloaderGui(tk.Tk):
         self.quality_box.grid(row=1, column=1, sticky='w')
         self.folder_entry = ttk.Entry(settings, textvariable=self.folder_var)
         self.folder_entry.grid(row=1, column=2, sticky='ew')
+        self.concurrency_box = ttk.Combobox(
+            settings,
+            textvariable=self.concurrency_var,
+            values=('1', '2', '3', '4', '5'),
+            state='readonly',
+            width=6,
+        )
+        self.concurrency_box.grid(row=1, column=3, sticky='w', padx=(12, 0))
 
         destination = ttk.Frame(frame)
         destination.grid(row=4, column=0, sticky='ew', pady=(0, 12))
@@ -397,6 +409,8 @@ class DownloaderGui(tk.Tk):
             btn.configure(state='disabled')
         if self.mode_var.get() != DownloadMode.TRANSCRIPT.value:
             self.quality_box.configure(state='disabled')
+        if job == 'run':
+            self.concurrency_box.configure(state='disabled')
         self.status_var.set('Resolving URLs...' if job == 'add' else 'Processing queue...')
         self._refresh_tree()
 
@@ -405,6 +419,7 @@ class DownloaderGui(tk.Tk):
         self.job = ''
         self.urls.configure(state='normal')
         self.folder_entry.configure(state='normal')
+        self.concurrency_box.configure(state='readonly')
         for btn in self.mode_buttons:
             btn.configure(state='normal')
         self._sync_mode_fields()
@@ -447,17 +462,24 @@ class DownloaderGui(tk.Tk):
     def _start_queue(self):
         if not any(t.status == TaskStatus.PENDING for t in self.manager.snapshot()):
             return
+        try:
+            concurrent = int(self.concurrency_var.get())
+            self.manager.set_concurrency(concurrent)
+        except ValueError as exc:
+            messagebox.showerror('Invalid concurrency', str(exc))
+            return
         self.stop_event.clear()
         self._set_busy('run')
-        threading.Thread(target=self._queue_worker, daemon=True).start()
+        threading.Thread(target=self._queue_worker, args=(concurrent,), daemon=True).start()
 
-    def _queue_worker(self):
+    def _queue_worker(self, concurrent: int):
         try:
             run_queue(
                 self.manager,
                 self.stop_event,
                 self._log_worker,
                 lambda: self.messages.put(('refresh', None)),
+                max_concurrent=concurrent,
             )
             self.messages.put(('done', 'Queue processing finished.'))
         except Exception as exc:
@@ -465,8 +487,10 @@ class DownloaderGui(tk.Tk):
 
     def _stop_queue(self):
         self.stop_event.set()
-        self.status_var.set('Stopping after current item...')
-        self._append_log('Stop requested; waiting for the active item to finish.')
+        self.status_var.set('Stopping after active downloads...')
+        self._append_log(
+            'Stop requested; waiting for running downloads to finish. No new tasks will start.'
+        )
         self._refresh_tree()
 
     def _retry_failed(self):

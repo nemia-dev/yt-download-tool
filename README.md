@@ -1,4 +1,4 @@
-# YT Download Tool v0.3
+# YT Download Tool v0.4
 
 Tkinter desktop queue manager for YouTube **videos, audio, and caption transcripts**. Supports pasting multiple links, expanding playlists, and restoring an interrupted queue. No speech-to-text model is used: videos without available captions are reported and skipped.
 
@@ -20,7 +20,7 @@ Video/audio conversion may require **FFmpeg** installed and available on PATH (i
 1. Paste video and/or playlist URLs, **one link per line**.
 2. Choose **Video**, **Audio**, or **Transcript** and optionally a quality and a project subfolder. Mode, quality and destination are recorded **when items are added**.
 3. Select **Add to queue**. Playlists are discovered in the background. Duplicate videos are ignored only when they have the same mode and output directory.
-4. Select **Start / Resume**. Items are processed one at a time. **Stop** lets the current item finish and leaves the rest pending.
+4. Select **Start / Resume**. Select **Parallel downloads (1–5)** to control how many videos/transcripts are processed at once (default: 3). **Stop** lets all active downloads finish, but starts no new tasks and leaves the rest pending.
 5. Use **Retry failed**, **Remove selected**, **Clear completed**, **Browse...**, or **Open folder** as needed. Right-click an item to open its containing folder.
 
 A `watch?v=...&list=...` URL adds **one video**. A `playlist?list=...` URL expands the **whole playlist**. Inaccessible entries without a usable ID are reported in the log during expansion.
@@ -55,7 +55,7 @@ An interrupted task becomes pending on restart. Completed entries with missing/e
 ### Task statuses
 
 - **Pending**: waiting to be processed
-- **Processing**: current task
+- **Processing**: task currently downloading (up to configured concurrency)
 - **Completed**: file saved
 - **Skipped**: existing nonempty output
 - **Unavailable**: missing/inaccessible captions (not automatically retried)
@@ -85,7 +85,7 @@ DEFAULT_TRANS_FOLDER="Transcription"
 MAX_CONCURRENT_DOWNLOADS=3
 ```
 
-`MAX_CONCURRENT_DOWNLOADS` applies to the legacy video/audio CLI playlist downloader. The GUI queue intentionally runs sequentially to make progress, errors and rate limiting easier to manage.
+`MAX_CONCURRENT_DOWNLOADS` sets the initial GUI worker count (clamped to 1–5) and controls the CLI video/audio playlist downloader. The GUI saves the chosen worker count in its queue state. Each worker uses blocking download APIs in a separate thread; no Tkinter widgets are touched by worker threads. YouTube may rate-limit frequent requests, so use 1–2 workers if failures increase.
 
 ## Tests
 

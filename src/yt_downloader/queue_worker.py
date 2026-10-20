@@ -1,9 +1,12 @@
-"""Sequential queue executor; all Tk interactions happen elsewhere."""
+"""Concurrent queue executor; all Tk interactions happen elsewhere."""
 
 # Standard Library
 import threading
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait
 from pathlib import Path
 
 # Project
@@ -113,29 +116,66 @@ def write_transcription_reports(tasks: list[QueueTask], log: LogFn = print):
 
 
 def run_queue(
-    manager: QueueManager, stop: threading.Event, log: LogFn, refresh: _REFRESH
+    manager: QueueManager,
+    stop: threading.Event,
+    log: LogFn,
+    refresh: _REFRESH,
+    *,
+    max_concurrent: int = 3,
 ) -> Counter:
-    """Execute only pending tasks, preserving each result even when others fail."""
-    for task in manager.snapshot():
+    """Run a bounded pool of downloads without blocking the Tkinter main loop.
+
+    Only ``max_concurrent`` tasks are submitted at once. After Stop is signalled,
+    no further tasks are scheduled, while active tasks finish naturally. Workers
+    handle blocking network I/O; the coordinating thread alone updates queue state.
+    """
+    if not 1 <= max_concurrent <= 5:
+        raise ValueError('Concurrent downloads must be between 1 and 5.')
+
+    pending = iter(task for task in manager.snapshot() if task.status == TaskStatus.PENDING)
+    in_flight = {}
+
+    def schedule_next(pool: ThreadPoolExecutor) -> bool:
         if stop.is_set():
-            log('Stop requested; remaining tasks stay pending.')
-            break
-        if task.status != TaskStatus.PENDING:
-            continue
+            return False
+        task = next(pending, None)
+        if task is None:
+            return False
         manager.update(task.task_id, TaskStatus.PROCESSING)
         refresh()
         log(f'Processing: {task.title} ({task.mode})')
-        try:
-            status, destination = process_task(task, log)
-        except TranscriptUnavailable as exc:
-            manager.update(task.task_id, TaskStatus.UNAVAILABLE, error=str(exc))
-            log(f'No captions: {task.title}: {exc}')
-        except Exception as exc:
-            manager.update(task.task_id, TaskStatus.FAILED, error=f'{type(exc).__name__}: {exc}')
-            log(f'Failed: {task.title}: {exc}')
-        else:
-            manager.update(task.task_id, status, output_path=destination)
-        refresh()
+        future = pool.submit(process_task, task, log)
+        in_flight[future] = task
+        return True
+
+    log(f'Starting queue with up to {max_concurrent} concurrent download(s).')
+    with ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix='yt-download') as pool:
+        while len(in_flight) < max_concurrent and schedule_next(pool):
+            pass
+
+        while in_flight:
+            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for future in done:
+                task = in_flight.pop(future)
+                try:
+                    status, destination = future.result()
+                except TranscriptUnavailable as exc:
+                    manager.update(task.task_id, TaskStatus.UNAVAILABLE, error=str(exc))
+                    log(f'No captions: {task.title}: {exc}')
+                except Exception as exc:
+                    manager.update(
+                        task.task_id, TaskStatus.FAILED, error=f'{type(exc).__name__}: {exc}'
+                    )
+                    log(f'Failed: {task.title}: {exc}')
+                else:
+                    manager.update(task.task_id, status, output_path=destination)
+                refresh()
+
+            while len(in_flight) < max_concurrent and schedule_next(pool):
+                pass
+
+    if stop.is_set():
+        log('Stop requested; remaining tasks stay pending.')
 
     snapshot = manager.snapshot()
     write_transcription_reports(snapshot, log)
