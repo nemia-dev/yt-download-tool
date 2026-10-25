@@ -286,6 +286,8 @@ def test_concurrent_workers_are_bounded_and_refill(tmp_path, monkeypatch):
 
     manager = QueueManager(tmp_path / 'state.json')
     tasks = many_tasks(tmp_path, count=9)
+    for task in tasks:
+        task.mode = DownloadMode.AUDIO
     manager.add(tasks)
     lock = threading.Lock()
     active = maximum = 0
@@ -316,6 +318,8 @@ def test_concurrent_stop_does_not_schedule_more_tasks(tmp_path, monkeypatch):
 
     manager = QueueManager(tmp_path / 'state.json')
     tasks = many_tasks(tmp_path, count=7)
+    for task in tasks:
+        task.mode = DownloadMode.AUDIO
     manager.add(tasks)
     started_three = threading.Event()
     release = threading.Event()
@@ -370,7 +374,13 @@ def test_concurrent_unavailable_and_failures_independent(tmp_path, monkeypatch):
 
     monkeypatch.setattr(queue_worker, 'process_task', mock_process)
     counts = queue_worker.run_queue(
-        manager, threading.Event(), lambda *_: None, lambda: None, max_concurrent=4
+        manager,
+        threading.Event(),
+        lambda *_: None,
+        lambda: None,
+        max_concurrent=4,
+        max_transcripts=2,
+        transcript_delay=0,
     )
     assert counts[TaskStatus.UNAVAILABLE] == 1
     assert counts[TaskStatus.FAILED] == 1

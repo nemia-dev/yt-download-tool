@@ -86,17 +86,28 @@ def download(
         from yt_downloader.queue_manager import create_tasks
         from yt_downloader.queue_manager import safe_subfolder
         from yt_downloader.queue_worker import process_task
+        from yt_downloader.transcripts import TranscriptIPBlocked
         from yt_downloader.transcripts import TranscriptUnavailable
 
         source = resolve_url(url, log=log)
         root = config.transcript_folder / safe_subfolder(folder_name)
         tasks = create_tasks(source, mode, None, root)
         unavailable = failed = 0
+        blocked_message = None
         for task in tasks:
             try:
                 status, result = process_task(task, log=log)
                 task.status = status
                 task.output_path = result
+            except TranscriptIPBlocked as exc:
+                task.status = TaskStatus.FAILED
+                task.error = f'IpBlocked: {exc}'
+                failed += 1
+                blocked_message = str(exc)
+                log(
+                    'YouTube blocked transcript requests. Stopping the batch; remaining videos were not attempted.'
+                )
+                break
             except TranscriptUnavailable as exc:
                 task.status = TaskStatus.UNAVAILABLE
                 task.error = str(exc)
@@ -107,15 +118,17 @@ def download(
                 task.error = str(exc)
                 failed += 1
                 log(f'Failed: {task.title}: {exc}')
-        if len(tasks) == 1 and (unavailable or failed):
-            raise RuntimeError(tasks[0].error)
         # Project
         from yt_downloader.queue_worker import write_transcription_reports
 
         write_transcription_reports(tasks, log=log)
         log(
-            f'Transcript batch finished: {len(tasks) - unavailable - failed} saved/existing, {unavailable} without captions, {failed} failed.'
+            f'Transcript batch finished: {sum(t.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED) for t in tasks)} saved/existing, {unavailable} without captions, {failed} failed, {sum(t.status == TaskStatus.PENDING for t in tasks)} pending.'
         )
+        if blocked_message:
+            raise RuntimeError(f'Queue paused due to IP block: {blocked_message}')
+        if len(tasks) == 1 and (unavailable or failed):
+            raise RuntimeError(tasks[0].error)
         return root
 
     video_data = get_video_data(url, log=log)

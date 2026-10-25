@@ -52,11 +52,15 @@ class DownloaderGui(tk.Tk):
         self.stop_event = threading.Event()
         self.busy = False
         self.job = ''
+        self.pause_reason = None
         self._group_expansion: dict[str, bool] = {}
         self.mode_var = tk.StringVar(value=DownloadMode.TRANSCRIPT.value)
         self.quality_var = tk.StringVar()
         self.concurrency_var = tk.StringVar(
             value=str(self.manager.get_concurrency(self.config_data.max_concurrent_downloads))
+        )
+        self.transcript_concurrency_var = tk.StringVar(
+            value=str(self.manager.get_transcript_concurrency())
         )
         self.folder_var = tk.StringVar()
         self.output_var = tk.StringVar()
@@ -98,12 +102,13 @@ class DownloaderGui(tk.Tk):
 
         settings = ttk.Frame(frame)
         settings.grid(row=3, column=0, sticky='ew', pady=(0, 7))
-        for col in range(4):
+        for col in range(5):
             settings.columnconfigure(col, weight=1)
         ttk.Label(settings, text='Download as').grid(row=0, column=0, sticky='w')
         ttk.Label(settings, text='Quality').grid(row=0, column=1, sticky='w')
         ttk.Label(settings, text='Project subfolder (optional)').grid(row=0, column=2, sticky='w')
-        ttk.Label(settings, text='Parallel downloads').grid(row=0, column=3, sticky='w')
+        ttk.Label(settings, text='Total parallel').grid(row=0, column=3, sticky='w')
+        ttk.Label(settings, text='Parallel transcripts').grid(row=0, column=4, sticky='w')
         radio_frame = ttk.Frame(settings)
         radio_frame.grid(row=1, column=0, sticky='w')
         self.mode_buttons = []
@@ -131,6 +136,14 @@ class DownloaderGui(tk.Tk):
             width=6,
         )
         self.concurrency_box.grid(row=1, column=3, sticky='w', padx=(12, 0))
+        self.transcript_concurrency_box = ttk.Combobox(
+            settings,
+            textvariable=self.transcript_concurrency_var,
+            values=('1', '2'),
+            state='readonly',
+            width=5,
+        )
+        self.transcript_concurrency_box.grid(row=1, column=4, sticky='w', padx=(12, 0))
 
         destination = ttk.Frame(frame)
         destination.grid(row=4, column=0, sticky='ew', pady=(0, 12))
@@ -352,7 +365,7 @@ class DownloaderGui(tk.Tk):
                 open=self._group_expansion.get(group_row, True),
             )
             for task in tasks:
-                detail = task.error[:140] if task.error else ''
+                detail = ' '.join(task.error.split())[:140] if task.error else ''
                 row = 't:' + task.task_id
                 label = (
                     f'{task.playlist_index:03d} - {task.title}'
@@ -411,6 +424,7 @@ class DownloaderGui(tk.Tk):
             self.quality_box.configure(state='disabled')
         if job == 'run':
             self.concurrency_box.configure(state='disabled')
+            self.transcript_concurrency_box.configure(state='disabled')
         self.status_var.set('Resolving URLs...' if job == 'add' else 'Processing queue...')
         self._refresh_tree()
 
@@ -420,6 +434,7 @@ class DownloaderGui(tk.Tk):
         self.urls.configure(state='normal')
         self.folder_entry.configure(state='normal')
         self.concurrency_box.configure(state='readonly')
+        self.transcript_concurrency_box.configure(state='readonly')
         for btn in self.mode_buttons:
             btn.configure(state='normal')
         self._sync_mode_fields()
@@ -465,14 +480,19 @@ class DownloaderGui(tk.Tk):
         try:
             concurrent = int(self.concurrency_var.get())
             self.manager.set_concurrency(concurrent)
+            transcript_concurrent = int(self.transcript_concurrency_var.get())
+            self.manager.set_transcript_concurrency(transcript_concurrent)
         except ValueError as exc:
             messagebox.showerror('Invalid concurrency', str(exc))
             return
         self.stop_event.clear()
+        self.pause_reason = None
         self._set_busy('run')
-        threading.Thread(target=self._queue_worker, args=(concurrent,), daemon=True).start()
+        threading.Thread(
+            target=self._queue_worker, args=(concurrent, transcript_concurrent), daemon=True
+        ).start()
 
-    def _queue_worker(self, concurrent: int):
+    def _queue_worker(self, concurrent: int, transcript_concurrent: int):
         try:
             run_queue(
                 self.manager,
@@ -480,6 +500,8 @@ class DownloaderGui(tk.Tk):
                 self._log_worker,
                 lambda: self.messages.put(('refresh', None)),
                 max_concurrent=concurrent,
+                max_transcripts=transcript_concurrent,
+                on_ip_block=lambda reason: self.messages.put(('blocked', reason)),
             )
             self.messages.put(('done', 'Queue processing finished.'))
         except Exception as exc:
@@ -521,11 +543,21 @@ class DownloaderGui(tk.Tk):
                 kind, message = self.messages.get_nowait()
                 if kind == 'log':
                     self._append_log(str(message))
+                elif kind == 'blocked':
+                    self.pause_reason = str(message)
                 elif kind == 'refresh':
                     self._refresh_tree()
                 elif kind == 'done':
                     self._append_log(str(message))
                     self._finish_job()
+                    if self.pause_reason:
+                        self.status_var.set('Paused: YouTube blocked transcript requests')
+                        messagebox.showwarning(
+                            'Transcript requests blocked',
+                            'YouTube blocked transcript requests. The queue was paused and remaining items are still Pending.\n\n'
+                            'Try again later, preferably with 1 parallel transcript. Repeated immediate retries may prolong the restriction.',
+                        )
+                        self.pause_reason = None
         except queue.Empty:
             pass
         self.after(100, self._poll_messages)

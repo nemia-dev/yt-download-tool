@@ -2,6 +2,7 @@
 
 # Standard Library
 import threading
+import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED
@@ -16,8 +17,9 @@ from yt_downloader.enums import DownloadMode
 from yt_downloader.queue_manager import QueueManager
 from yt_downloader.queue_manager import QueueTask
 from yt_downloader.queue_manager import TaskStatus
+from yt_downloader.transcripts import TranscriptIPBlocked
 from yt_downloader.transcripts import TranscriptUnavailable
-from yt_downloader.transcripts import fetch_text
+from yt_downloader.transcripts import fetch_text_with_fallback
 from yt_downloader.transcripts import save_transcript
 
 LogFn = Callable[[str], None]
@@ -49,7 +51,7 @@ def process_task(task: QueueTask, log: LogFn = print) -> tuple[TaskStatus, str]:
         if target.is_file() and target.stat().st_size > 0:
             log(f'Already exists: {target.name}')
             return TaskStatus.SKIPPED, str(target)
-        text = fetch_text(task.video_id, log=log)
+        text = fetch_text_with_fallback(task.video_id, log=log)
         save_transcript(target, text)
         log(f'Saved: {target}')
         return TaskStatus.COMPLETED, str(target)
@@ -122,43 +124,82 @@ def run_queue(
     refresh: _REFRESH,
     *,
     max_concurrent: int = 3,
+    max_transcripts: int = 1,
+    transcript_delay: float = 2.0,
+    on_ip_block: Callable[[str], None] | None = None,
 ) -> Counter:
-    """Run a bounded pool of downloads without blocking the Tkinter main loop.
+    """Run a bounded queue with an independent transcript limit.
 
-    Only ``max_concurrent`` tasks are submitted at once. After Stop is signalled,
-    no further tasks are scheduled, while active tasks finish naturally. Workers
-    handle blocking network I/O; the coordinating thread alone updates queue state.
+    A recognized IP block trips a circuit breaker: pending tasks remain queued,
+    in-flight downloads are allowed to finish, and no new task is submitted.
+    Workers never change Tk or QueueManager state directly.
     """
     if not 1 <= max_concurrent <= 5:
         raise ValueError('Concurrent downloads must be between 1 and 5.')
+    if not 1 <= max_transcripts <= 2:
+        raise ValueError('Parallel transcripts must be between 1 and 2.')
+    if transcript_delay < 0:
+        raise ValueError('Transcript request delay cannot be negative.')
 
-    pending = iter(task for task in manager.snapshot() if task.status == TaskStatus.PENDING)
+    pending = [task for task in manager.snapshot() if task.status == TaskStatus.PENDING]
     in_flight = {}
+    next_transcript_at = 0.0
+    breaker_tripped = False
+
+    def is_transcript(task: QueueTask) -> bool:
+        return task.mode == DownloadMode.TRANSCRIPT
 
     def schedule_next(pool: ThreadPoolExecutor) -> bool:
-        if stop.is_set():
+        nonlocal next_transcript_at
+        if stop.is_set() or len(in_flight) >= max_concurrent:
             return False
-        task = next(pending, None)
-        if task is None:
-            return False
-        manager.update(task.task_id, TaskStatus.PROCESSING)
-        refresh()
-        log(f'Processing: {task.title} ({task.mode})')
-        future = pool.submit(process_task, task, log)
-        in_flight[future] = task
-        return True
+        transcript_active = sum(is_transcript(task) for task in in_flight.values())
+        now = time.monotonic()
+        for index, task in enumerate(pending):
+            if is_transcript(task) and (
+                transcript_active >= max_transcripts or now < next_transcript_at
+            ):
+                continue
+            pending.pop(index)
+            manager.update(task.task_id, TaskStatus.PROCESSING)
+            refresh()
+            log(f'Processing: {task.title} ({task.mode})')
+            future = pool.submit(process_task, task, log)
+            in_flight[future] = task
+            if is_transcript(task):
+                next_transcript_at = time.monotonic() + transcript_delay
+            return True
+        return False
 
-    log(f'Starting queue with up to {max_concurrent} concurrent download(s).')
+    log(
+        f'Starting queue: max {max_concurrent} total, max {max_transcripts} transcript request(s), {transcript_delay:g}s spacing.'
+    )
     with ThreadPoolExecutor(max_workers=max_concurrent, thread_name_prefix='yt-download') as pool:
-        while len(in_flight) < max_concurrent and schedule_next(pool):
-            pass
-
-        while in_flight:
-            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+        while pending or in_flight:
+            while schedule_next(pool):
+                pass
+            if not in_flight:
+                if stop.is_set():
+                    break
+                # Only transcript cooldown can prevent scheduling when nothing is active.
+                stop.wait(min(max(0.01, next_transcript_at - time.monotonic()), 0.25))
+                continue
+            done, _ = wait(in_flight, timeout=0.25, return_when=FIRST_COMPLETED)
             for future in done:
                 task = in_flight.pop(future)
                 try:
                     status, destination = future.result()
+                except TranscriptIPBlocked as exc:
+                    manager.update(task.task_id, TaskStatus.FAILED, error=f'IpBlocked: {exc}')
+                    log(f'IP BLOCKED: {task.title}: {exc}')
+                    if not breaker_tripped:
+                        breaker_tripped = True
+                        stop.set()
+                        log(
+                            'QUEUE PAUSED: YouTube is blocking transcript requests. Remaining tasks were left pending; do not retry immediately.'
+                        )
+                        if on_ip_block is not None:
+                            on_ip_block(str(exc))
                 except TranscriptUnavailable as exc:
                     manager.update(task.task_id, TaskStatus.UNAVAILABLE, error=str(exc))
                     log(f'No captions: {task.title}: {exc}')
@@ -171,11 +212,8 @@ def run_queue(
                     manager.update(task.task_id, status, output_path=destination)
                 refresh()
 
-            while len(in_flight) < max_concurrent and schedule_next(pool):
-                pass
-
     if stop.is_set():
-        log('Stop requested; remaining tasks stay pending.')
+        log('Queue stopped; remaining tasks stay pending.')
 
     snapshot = manager.snapshot()
     write_transcription_reports(snapshot, log)

@@ -133,6 +133,7 @@ class QueueManager:
         self.tasks: list[QueueTask] = []
         self.folder_overrides: dict[str, str] = {}
         self.concurrency: int | None = None
+        self.transcript_concurrency: int = 1
         self.load_warning: str = ''
         self._load()
 
@@ -162,6 +163,12 @@ class QueueManager:
             saved_concurrency = data.get('concurrency')
             if isinstance(saved_concurrency, int) and 1 <= saved_concurrency <= 5:
                 self.concurrency = saved_concurrency
+            saved_transcript_concurrency = data.get('transcript_concurrency', 1)
+            if (
+                type(saved_transcript_concurrency) is int
+                and 1 <= saved_transcript_concurrency <= 2
+            ):
+                self.transcript_concurrency = saved_transcript_concurrency
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self.load_warning = (
                 f'Could not load queue state ({exc}); a backup will be kept before any new save.'
@@ -182,6 +189,7 @@ class QueueManager:
                 'tasks': [asdict(t) for t in self.tasks],
                 'folder_overrides': self.folder_overrides,
                 'concurrency': self.concurrency,
+                'transcript_concurrency': self.transcript_concurrency,
             },
             ensure_ascii=False,
             indent=2,
@@ -287,3 +295,14 @@ class QueueManager:
 
     def counts(self) -> Counter:
         return Counter(t.status for t in self.snapshot())
+
+    def set_transcript_concurrency(self, count: int):
+        if type(count) is not int or not 1 <= count <= 2:
+            raise ValueError('Parallel transcripts must be between 1 and 2.')
+        with self.lock:
+            self.transcript_concurrency = count
+            self._save()
+
+    def get_transcript_concurrency(self) -> int:
+        with self.lock:
+            return self.transcript_concurrency

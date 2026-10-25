@@ -1,4 +1,4 @@
-# YT Download Tool v0.4
+# YT Download Tool v0.5
 
 Tkinter desktop queue manager for YouTube **videos, audio, and caption transcripts**. Supports pasting multiple links, expanding playlists, and restoring an interrupted queue. No speech-to-text model is used: videos without available captions are reported and skipped.
 
@@ -20,7 +20,7 @@ Video/audio conversion may require **FFmpeg** installed and available on PATH (i
 1. Paste video and/or playlist URLs, **one link per line**.
 2. Choose **Video**, **Audio**, or **Transcript** and optionally a quality and a project subfolder. Mode, quality and destination are recorded **when items are added**.
 3. Select **Add to queue**. Playlists are discovered in the background. Duplicate videos are ignored only when they have the same mode and output directory.
-4. Select **Start / Resume**. Select **Parallel downloads (1–5)** to control how many videos/transcripts are processed at once (default: 3). **Stop** lets all active downloads finish, but starts no new tasks and leaves the rest pending.
+4. Select **Start / Resume**. **Total parallel (1–5)** controls total simultaneous downloads (default: 3). **Parallel transcripts (1–2)** has its own stricter limit (default: **1**), independently of video/audio jobs. Transcript jobs start at least 2 seconds apart. **Stop** lets current downloads finish, but starts no new tasks and leaves the rest pending.
 5. Use **Retry failed**, **Remove selected**, **Clear completed**, **Browse...**, or **Open folder** as needed. Right-click an item to open its containing folder.
 
 A `watch?v=...&list=...` URL adds **one video**. A `playlist?list=...` URL expands the **whole playlist**. Inaccessible entries without a usable ID are reported in the log during expansion.
@@ -39,7 +39,11 @@ Transcription/
 
 A chosen project subfolder goes between `Transcription/` and `Individual/` or playlist directories. Playlist numbers follow YouTube's original positions.
 
-Transcript selection prefers **English**, then **Polish**, then other available languages. Within each language, manual captions take priority over auto-generated captions. If no accessible captions exist, the task is **Unavailable**, and execution continues. Other download/network errors are **Failed** and may be retried. Files are UTF-8 text written atomically. Existing nonempty output files are skipped by default.
+Transcript selection prefers **English**, then **Polish**, then other available languages. Within each language, manual captions take priority over auto-generated captions. The application first tries `youtube-transcript-api`; if it fails, it uses **yt-dlp's existing subtitle tracks** as a fallback. The fallback fetches only subtitle data; it does not download video or audio or generate speech recognition. It supports VTT, JSON3, SRT, SRV3, and TTML tracks.
+
+If neither method finds captions, the task is **Unavailable**. Ordinary download/network errors become **Failed**. A confirmed **IpBlocked / HTTP 429** is different: when both methods cannot recover, the queue **pauses automatically** rather than attempting the remaining videos. Already-running tasks finish, while unstarted items stay **Pending**. The GUI displays a warning. Do not immediately retry an entire playlist from the same IP; wait and try one transcript later, or reduce Parallel transcripts to 1.
+
+Files are UTF-8 text written atomically. Existing nonempty output files are skipped by default.
 
 The root's `transcription-report.txt` summarizes statuses and lists missing-caption videos and failures, including their URLs. It is updated after a queue run. Reports are created per transcript root when queued tasks target different destinations.
 
@@ -59,7 +63,7 @@ An interrupted task becomes pending on restart. Completed entries with missing/e
 - **Completed**: file saved
 - **Skipped**: existing nonempty output
 - **Unavailable**: missing/inaccessible captions (not automatically retried)
-- **Failed**: download/API error (can be retried)
+- **Failed**: download/API error (can be retried); an IP block automatically pauses the queue
 
 ## CLI (preserved)
 
@@ -71,7 +75,7 @@ uv run python src/main.py "YOUTUBE_URL" -a -q 192
 uv run python src/main.py "YOUTUBE_URL" -t -f "Research/2026"
 ```
 
-The CLI continues to support the existing flags. Transcript mode now also handles explicit playlist URLs and the same playlist/individual output folders. The GUI queue state is separate from CLI executions.
+The CLI continues to support the existing flags. Transcript mode also handles explicit playlist URLs, uses the same fallback and playlist/individual output folders, and stops the batch on an IP block. The GUI queue state is separate from CLI executions.
 
 ## Configuration
 
@@ -85,7 +89,7 @@ DEFAULT_TRANS_FOLDER="Transcription"
 MAX_CONCURRENT_DOWNLOADS=3
 ```
 
-`MAX_CONCURRENT_DOWNLOADS` sets the initial GUI worker count (clamped to 1–5) and controls the CLI video/audio playlist downloader. The GUI saves the chosen worker count in its queue state. Each worker uses blocking download APIs in a separate thread; no Tkinter widgets are touched by worker threads. YouTube may rate-limit frequent requests, so use 1–2 workers if failures increase.
+`MAX_CONCURRENT_DOWNLOADS` sets the initial GUI worker count (clamped to 1–5) and controls the CLI video/audio playlist downloader. The GUI saves the total worker count and the separate transcript concurrency in its queue state. Each worker uses blocking download APIs in a separate thread; no Tkinter widgets are touched by worker threads. YouTube may rate-limit repeated requests, and a fallback method cannot guarantee access when the public IP is blocked.
 
 ## Tests
 
@@ -93,4 +97,4 @@ MAX_CONCURRENT_DOWNLOADS=3
 uv run --with pytest pytest -q tests
 ```
 
-Tests mock YouTube/API calls and do not require live YouTube access. Live functionality depends on YouTube response behavior, captions availability, `yt-dlp` compatibility and network access.
+Tests mock YouTube/API calls and do not require live YouTube access. Live functionality, including fallback subtitle retrieval, depends on YouTube response behavior, captions availability, `yt-dlp` compatibility, and network access.
